@@ -1,0 +1,38 @@
+{
+  "name": "clipboard-manager",
+  "productName": "ClipNest",
+  "version": "1.0.0",
+  "description": "Modern clipboard history manager for Linux with emoji, symbols, favorites and tray controls",
+  "author": "Salih Öz <slhozdeveloper@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "lint": "eslint src --ext ts,tsx"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "emoji.json": "^16.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "unicode-icons": "^2025.11.23"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

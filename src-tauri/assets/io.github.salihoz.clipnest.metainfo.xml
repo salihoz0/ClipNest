@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.salihoz.clipnest</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>ClipNest</name>
+  <summary>Modern clipboard history manager</summary>
+  <summary xml:lang="tr">Modern pano geçmişi yöneticisi</summary>
+  <description>
+    <p>
+      ClipNest is a modern, lightweight, and powerful clipboard history manager built with Tauri and React.
+      It runs seamlessly in the background, tracks your clipboard history, and allows you to quickly search
+      and paste items using global keyboard shortcuts.
+    </p>
+    <p xml:lang="tr">
+      ClipNest; Tauri ve React ile geliştirilmiş modern, hafif ve güçlü bir pano geçmişi yöneticisidir.
+      Arka planda sorunsuz çalışır, kopyalama geçmişinizi takip eder ve küresel klavye kısayollarını kullanarak
+      ögelere hızlıca erişip yapıştırmanızı sağlar.
+    </p>
+    <ul>
+      <li>Fast search and filter (Text and Images)</li>
+      <li>Global keyboard shortcut support</li>
+      <li>Pin favorites to prevent them from being cleared</li>
+      <li>Clean and modern user interface with light/dark theme support</li>
+      <li>System tray integration for quick access</li>
+    </ul>
+    <ul xml:lang="tr">
+      <li>Hızlı arama ve filtreleme (Metin ve Görsel)</li>
+      <li>Küresel klavye kısayolu desteği</li>
+      <li>Silinmesini istemediğiniz ögeleri favorilere ekleme</li>
+      <li>Açık/koyu tema destekli temiz ve modern kullanıcı arayüzü</li>
+      <li>Hızlı erişim için sistem tepsisi (tray) entegrasyonu</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">clipnest.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main Window</caption>
+      <caption xml:lang="tr">Ana Pencere</caption>
+      <image>https://raw.githubusercontent.com/salihoz0/ClipNest/main/docs/screenshots/main.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/salihoz0/ClipNest</url>
+  <url type="bugtracker">https://github.com/salihoz0/ClipNest/issues</url>
+  <provides>
+    <binary>clipnest</binary>
+  </provides>
+</component>

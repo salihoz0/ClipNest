@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ClipNest",
+  "version": "1.0.0",
+  "identifier": "io.github.salihoz.clipnest",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ClipNest",
+        "label": "main",
+        "width": 400,
+        "height": 600,
+        "visible": false,
+        "minWidth": 360,
+        "minHeight": 520,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "copyright": "Copyright © 2026 Salih Öz",
+    "shortDescription": "Modern clipboard history manager",
+    "longDescription": "ClipNest is a clipboard history manager with tray controls, favorites, search, emoji and symbol insertion.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["xdotool"],
+        "files": {
+          "/usr/share/applications/ClipNest.desktop": "assets/clipnest.desktop",
+          "/usr/share/metainfo/io.github.salihoz.clipnest.metainfo.xml": "assets/io.github.salihoz.clipnest.metainfo.xml"
+        }
+      }
+    }
+
+  }
+}
