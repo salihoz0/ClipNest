@@ -1,0 +1,13 @@
+Source: clipnest
+Section: utils
+Priority: optional
+Maintainer: Salih Öz <slhozdeveloper@gmail.com>
+Build-Depends: debhelper-compat (= 13), nodejs, npm, rustc, cargo, libwebkit2gtk-4.1-dev, libxdo-dev, libssl-dev, libayatana-appindicator3-dev, librsvg2-dev
+Standards-Version: 4.6.0
+Homepage: https://github.com/salihoz0/ClipNest
+
+Package: clipnest
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, xdotool
+Description: Modern clipboard history manager
+ ClipNest is a clipboard history manager with tray controls, favorites, search, emoji and symbol insertion.

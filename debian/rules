@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	npm ci
+	npm run tauri build -- --no-bundle
+
+override_dh_auto_install:
+	install -Dm755 src-tauri/target/release/clipnest $(CURDIR)/debian/clipnest/usr/bin/clipnest
+	install -Dm644 src-tauri/assets/clipnest.desktop $(CURDIR)/debian/clipnest/usr/share/applications/clipnest.desktop
+	install -Dm644 src-tauri/icons/128x128.png $(CURDIR)/debian/clipnest/usr/share/icons/hicolor/128x128/apps/clipnest.png

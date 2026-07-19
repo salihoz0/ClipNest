@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories=Utility;
+Comment=Clipboard Manager
+Exec=clipnest
+Icon=clipnest
+Name=ClipNest
+Terminal=false
+Type=Application
+StartupNotify=false
+StartupWMClass=clipnest

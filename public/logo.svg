@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="ClipNest">
+  <defs>
+    <linearGradient id="bg" x1="38" y1="30" x2="220" y2="226" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset=".45" stop-color="#164E63"/>
+      <stop offset="1" stop-color="#7C2D12"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="82" y1="66" x2="178" y2="207" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#DDE7F0"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="11" flood-color="#020617" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <path d="M67 89c0-15.5 12.5-28 28-28h66c15.5 0 28 12.5 28 28v92c0 15.5-12.5 28-28 28H95c-15.5 0-28-12.5-28-28V89Z" fill="#E2E8F0" opacity=".22"/>
+  <path d="M78 82c0-10.5 8.5-19 19-19h62c10.5 0 19 8.5 19 19v103c0 10.5-8.5 19-19 19H97c-10.5 0-19-8.5-19-19V82Z" fill="url(#paper)" filter="url(#shadow)"/>
+  <path d="M104 62c2.8-10.9 12.7-19 24.5-19s21.7 8.1 24.5 19h6c6.6 0 12 5.4 12 12v15H86V74c0-6.6 5.4-12 12-12h6Z" fill="#F59E0B"/>
+  <circle cx="128.5" cy="62" r="9.5" fill="#111827"/>
+  <path d="M101 120h54M101 145h54M101 170h36" stroke="#0F172A" stroke-width="13" stroke-linecap="round"/>
+  <path d="M186 141c21 0 38 17 38 38s-17 38-38 38-38-17-38-38 17-38 38-38Z" fill="#14B8A6"/>
+  <path d="m171 178 10 10 22-25" fill="none" stroke="#ECFEFF" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

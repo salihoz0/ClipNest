@@ -1,0 +1,33 @@
+id: io.github.salihoz0.clipnest
+runtime: org.gnome.Platform
+runtime-version: '45'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: clipnest
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=session-bus
+  - --device=dri
+  - --share=network
+  - --talk-name=org.freedesktop.secrets
+  - --filesystem=xdg-config/autostart:create
+modules:
+  - name: node
+    sources:
+      - type: archive
+        url: https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-x64.tar.xz
+        sha256: 4f145be844d1807d9b93db0377eebe7cbf9c1626f2122b5123d463e8fbe54c5e
+  - name: clipnest
+    buildsystem: simple
+    build-commands:
+      - npm ci
+      - npm run tauri build
+      - install -Dm755 src-tauri/target/release/clipnest /app/bin/clipnest
+      - install -Dm644 src-tauri/assets/clipnest.desktop /app/share/applications/io.github.salihoz0.clipnest.desktop
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/io.github.salihoz0.clipnest.png
+    sources:
+      - type: dir
+        path: ..

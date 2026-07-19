@@ -1,0 +1,34 @@
+name: clipnest
+base: core22
+version: '1.0.0'
+summary: Modern clipboard history manager
+description: |
+  ClipNest is a clipboard history manager with tray controls, favorites, search, emoji and symbol insertion.
+
+grade: stable
+confinement: strict
+
+apps:
+  clipnest:
+    command: bin/clipnest
+    desktop: usr/share/applications/clipnest.desktop
+    extensions: [gnome]
+    plugs:
+      - x11
+      - wayland
+      - unity7
+      - password-manager-service
+      - gsettings
+      - home
+
+parts:
+  clipnest:
+    plugin: nil
+    source: .
+    override-build: |
+      npm ci
+      npm run tauri build
+      mkdir -p $CRAFT_PART_INSTALL/bin
+      cp src-tauri/target/release/clipnest $CRAFT_PART_INSTALL/bin/
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/applications
+      cp src-tauri/assets/clipnest.desktop $CRAFT_PART_INSTALL/usr/share/applications/
