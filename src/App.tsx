@@ -891,6 +891,7 @@ function SettingsModal({
   const [password, setPassword] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState("");
   const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
   const recordingModifiersRef = useRef<Set<string>>(new Set());
   const shortcutLabel = isRecording ? labels.shortcutRecording : formatShortcutLabel(settings.shortcut, labels.shortcutDisabled);
@@ -912,32 +913,44 @@ function SettingsModal({
     if (isCheckingUpdates) return;
 
     setIsCheckingUpdates(true);
+    setUpdateStatus(labels.updateChecking);
     onShowToast(labels.updateChecking);
 
     try {
       const update = await checkForUpdates();
       if (!update) {
+        setUpdateStatus(labels.updateNone);
         onShowToast(labels.updateNone);
         return;
       }
 
+      const foundMessage = `${labels.updateFound}: v${update.version}`;
+      setUpdateStatus(foundMessage);
+      onShowToast(foundMessage);
       const shouldInstall = window.confirm(
-        `${labels.updateFound}: v${update.version}\n\n${update.body ?? ""}\n\n${labels.updateInstallConfirm}`
+        `${foundMessage}\n\n${update.body ?? ""}\n\n${labels.updateInstallConfirm}`
       );
 
       if (!shouldInstall) {
         await update.close();
+        setUpdateStatus(labels.updateCancelled);
         onShowToast(labels.updateCancelled);
         return;
       }
 
+      setUpdateStatus(labels.updateInstalling);
       onShowToast(labels.updateInstalling);
       await installUpdate(update, (percent) => {
-        onShowToast(percent === null ? labels.updateDownloading : `${labels.updateDownloading} %${percent}`);
+        const progressMessage = percent === null ? labels.updateDownloading : `${labels.updateDownloading} %${percent}`;
+        setUpdateStatus(progressMessage);
+        onShowToast(progressMessage);
       });
     } catch (error) {
       console.error("Update check failed:", error);
-      onShowToast(`${labels.updateFailed}: ${String(error)}`);
+      const detail = error instanceof Error ? error.message : String(error);
+      const errorMessage = `${labels.updateFailed}: ${detail}`;
+      setUpdateStatus(errorMessage);
+      onShowToast(errorMessage);
     } finally {
       setIsCheckingUpdates(false);
     }
@@ -1167,6 +1180,11 @@ function SettingsModal({
         >
           {isCheckingUpdates ? labels.updateChecking : (labels.checkUpdates || "Güncellemeleri Kontrol Et")}
         </button>
+        {updateStatus ? (
+          <p className="update-status" role="status" aria-live="polite">
+            {updateStatus}
+          </p>
+        ) : null}
 
         <button 
           type="button" 

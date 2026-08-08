@@ -1,4 +1,6 @@
-clipnest (1.0.1-1) unstable; urgency=medium
+clipnest (1.0.2-1) unstable; urgency=medium
+
+  * Show update status and errors inside the settings window.
 
   * Add signed GitHub Releases updater and in-app update installation.
 
