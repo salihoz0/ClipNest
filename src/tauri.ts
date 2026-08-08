@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 export type ClipboardItem = {
   id: string;
@@ -33,7 +35,7 @@ export type ClipboardSnapshot = {
   settings: Settings;
 };
 
-const isTauri = typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__ !== undefined;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // Mock data for beautiful dummy screenshots
 const mockItems: ClipboardItem[] = [
@@ -245,4 +247,29 @@ export function listenWindowShown(handler: () => void) {
 export function appReady() {
   if (!isTauri) return Promise.resolve();
   return invoke<void>("app_ready");
+}
+
+export async function checkForUpdates() {
+  if (!isTauri) return null;
+  return check({ timeout: 15_000 });
+}
+
+export async function installUpdate(update: Update, onProgress?: (percent: number | null) => void) {
+  let downloaded = 0;
+  let total: number | undefined;
+
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      total = event.data.contentLength;
+      onProgress?.(0);
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      onProgress?.(total ? Math.min(100, Math.round((downloaded / total) * 100)) : null);
+    } else if (event.event === "Finished") {
+      onProgress?.(100);
+    }
+  });
+
+  await update.close();
+  await relaunch();
 }

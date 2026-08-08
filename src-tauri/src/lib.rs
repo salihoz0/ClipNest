@@ -32,6 +32,7 @@ const MAX_PREVIEW_CHARS: usize = 180;
 const MAX_CAPTURE_CHARS: usize = 250_000;
 const AUTOSTART_ARG: &str = "--autostart";
 const PACKAGE_CANDIDATES: &[&str] = &["clip-nest", "clipnest"];
+const GNOME_CLIPNEST_BINDING: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipnest/";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ClipboardKind {
@@ -387,6 +388,20 @@ fn emit_items(app: &AppHandle, items: &[ClipboardItem]) {
     let _ = app.emit("clipboard://changed", items);
 }
 
+fn current_clipboard_fingerprint(clipboard: &mut Clipboard) -> ClipboardFingerprint {
+    if let Ok(text) = clipboard.get_text() {
+        if !text.trim().is_empty() {
+            return ClipboardFingerprint::Text(text);
+        }
+    }
+
+    if let Ok(image) = clipboard.get_image() {
+        return ClipboardFingerprint::Image(fingerprint_image(image.bytes.as_ref(), image.width, image.height));
+    }
+
+    ClipboardFingerprint::None
+}
+
 fn is_autostart_launch() -> bool {
     std::env::args().any(|arg| arg == AUTOSTART_ARG)
 }
@@ -496,12 +511,27 @@ fn read_mouse_position() -> Option<(f64, f64)> {
     Some((x?, y?))
 }
 
+fn show_window_when_ready(app: &AppHandle, tray_anchor: Option<(f64, f64)>) {
+    let clipboard_state = app.state::<ClipboardState>().inner().clone();
+    let app_handle = app.clone();
+
+    thread::spawn(move || loop {
+        let settings = clipboard_state
+            .0
+            .lock()
+            .ok()
+            .and_then(|store| store.is_loaded.then(|| store.settings.clone()));
+
+        if let Some(settings) = settings {
+            show_main_window(&app_handle, &settings, tray_anchor);
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    });
+}
+
 fn show_window_for_current_settings(app: &AppHandle) {
-    let clipboard_state = app.state::<ClipboardState>();
-    let settings = clipboard_state
-        .0
-        .lock()
-        .map(|store| store.settings.clone());
     let tray_anchor = app
         .state::<TrayAnchorState>()
         .0
@@ -509,8 +539,128 @@ fn show_window_for_current_settings(app: &AppHandle) {
         .ok()
         .and_then(|value| *value);
 
-    if let Ok(settings) = settings {
-        show_main_window(app, &settings, tray_anchor);
+    show_window_when_ready(app, tray_anchor);
+}
+
+fn is_super_shortcut(shortcut: &str) -> bool {
+    shortcut
+        .split('+')
+        .any(|part| part.trim().eq_ignore_ascii_case("super"))
+}
+
+fn gnome_key_name(key: &str) -> String {
+    match key.to_ascii_lowercase().as_str() {
+        "space" => "space".to_string(),
+        "up" => "Up".to_string(),
+        "down" => "Down".to_string(),
+        "left" => "Left".to_string(),
+        "right" => "Right".to_string(),
+        "esc" => "Escape".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn to_gnome_shortcut(shortcut: &str) -> Option<String> {
+    let mut modifiers = String::new();
+    let mut key = None;
+
+    for part in shortcut.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => modifiers.push_str("<Control>"),
+            "alt" => modifiers.push_str("<Alt>"),
+            "shift" => modifiers.push_str("<Shift>"),
+            "super" | "meta" | "win" | "windows" => modifiers.push_str("<Super>"),
+            _ => key = Some(gnome_key_name(part)),
+        }
+    }
+
+    key.map(|key| format!("{modifiers}{key}"))
+}
+
+fn set_gnome_binding_value(schema: &str, key: &str, value: &str) -> Result<(), String> {
+    let status = Command::new("gsettings")
+        .args(["set", schema, key, value])
+        .status()
+        .map_err(|error| format!("GNOME kısayolu ayarlanamadı: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("GNOME kısayolu ayarlanamadı: {schema} {key}"))
+    }
+}
+
+fn gnome_binding_value_matches(schema: &str, key: &str, value: &str) -> bool {
+    let Ok(output) = Command::new("gsettings").args(["get", schema, key]).output() else {
+        return false;
+    };
+
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).trim() == format!("'{value}'")
+}
+
+fn set_gnome_custom_keybindings(bindings: &[String]) -> Result<(), String> {
+    let value = format!(
+        "[{}]",
+        bindings
+            .iter()
+            .map(|binding| format!("'{}'", binding.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    set_gnome_binding_value(
+        "org.gnome.settings-daemon.plugins.media-keys",
+        "custom-keybindings",
+        &value,
+    )
+}
+
+fn sync_gnome_shortcut(previous: &str, next: &str) -> Result<(), String> {
+    let schema = "org.gnome.settings-daemon.plugins.media-keys";
+    let output = Command::new("gsettings")
+        .args(["get", schema, "custom-keybindings"])
+        .output()
+        .map_err(|error| format!("GNOME kısayolları okunamadı: {error}"))?;
+
+    if !output.status.success() {
+        return Err("GNOME kısayolları okunamadı".to_string());
+    }
+
+    let current = String::from_utf8_lossy(&output.stdout);
+    let mut bindings = parse_gsettings_string_list(&current);
+    let previous_is_gnome = is_super_shortcut(previous);
+    let next_is_gnome = is_super_shortcut(next);
+    let mut bindings_changed = false;
+
+    if previous_is_gnome || (!next_is_gnome && bindings.iter().any(|binding| binding == GNOME_CLIPNEST_BINDING)) {
+        bindings.retain(|binding| binding != GNOME_CLIPNEST_BINDING);
+        reset_gnome_binding(GNOME_CLIPNEST_BINDING);
+        bindings_changed = true;
+    }
+
+    if next_is_gnome {
+        let binding_schema = format!("{schema}.custom-keybinding:{GNOME_CLIPNEST_BINDING}");
+        let binding = to_gnome_shortcut(next).ok_or_else(|| "GNOME kısayolu çözülemedi".to_string())?;
+        if !gnome_binding_value_matches(&binding_schema, "name", "ClipNest") {
+            set_gnome_binding_value(&binding_schema, "name", "ClipNest")?;
+        }
+        if !gnome_binding_value_matches(&binding_schema, "command", "/usr/bin/clipnest --show") {
+            set_gnome_binding_value(&binding_schema, "command", "/usr/bin/clipnest --show")?;
+        }
+        if !gnome_binding_value_matches(&binding_schema, "binding", &binding) {
+            set_gnome_binding_value(&binding_schema, "binding", &binding)?;
+        }
+        if !bindings.iter().any(|item| item == GNOME_CLIPNEST_BINDING) {
+            bindings.push(GNOME_CLIPNEST_BINDING.to_string());
+            bindings_changed = true;
+        }
+    }
+
+    if bindings_changed {
+        set_gnome_custom_keybindings(&bindings)
+    } else {
+        Ok(())
     }
 }
 
@@ -520,7 +670,12 @@ fn register_global_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), Strin
         return Ok(());
     }
 
-    app.global_shortcut()
+    if is_super_shortcut(shortcut) {
+        return Err("Super kısayolu GNOME üzerinden yönetilir".to_string());
+    }
+
+    let result = app
+        .global_shortcut()
         .on_shortcut(shortcut, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
                 if let Ok(mut previous) = app.state::<PreviousWindow>().0.lock() {
@@ -529,7 +684,15 @@ fn register_global_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), Strin
                 show_window_for_current_settings(app);
             }
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+
+    if let Err(error) = &result {
+        eprintln!("[Shortcut] {shortcut} kaydedilemedi: {error}");
+    } else {
+        println!("[Shortcut] {shortcut} kaydedildi");
+    }
+
+    result
 }
 
 fn sync_global_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<(), String> {
@@ -537,21 +700,36 @@ fn sync_global_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<(
     let next = next.trim();
 
     if previous == next {
+        if is_super_shortcut(next) {
+            sync_gnome_shortcut("", next)?;
+        }
         return Ok(());
     }
 
-    if !previous.is_empty() {
+    if !previous.is_empty() && !is_super_shortcut(previous) {
         let _ = app.global_shortcut().unregister(previous);
     }
 
     if next.is_empty() {
+        if is_super_shortcut(previous) {
+            sync_gnome_shortcut(previous, next)?;
+        }
         return Ok(());
+    }
+
+    if is_super_shortcut(next) {
+        sync_gnome_shortcut(previous, next)?;
+        return Ok(());
+    }
+
+    if is_super_shortcut(previous) {
+        sync_gnome_shortcut(previous, "")?;
     }
 
     match register_global_shortcut(app, next) {
         Ok(()) => Ok(()),
         Err(error) => {
-            if !previous.is_empty() {
+            if !previous.is_empty() && !is_super_shortcut(previous) {
                 let _ = register_global_shortcut(app, previous);
             }
             Err(error)
@@ -710,6 +888,7 @@ fn show_main_window(app: &AppHandle, settings: &Settings, tray_anchor: Option<(f
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
         let _ = window.emit("window://shown", ());
     } else {
         println!("[Rust] Main window NOT found!");
@@ -723,6 +902,7 @@ fn spawn_clipboard_watcher(app: AppHandle, state: ClipboardState) {
             Err(_) => return,
         };
         let mut last_seen = ClipboardFingerprint::None;
+        let mut initialized = false;
 
         loop {
             let (is_loaded, interval) = if let Ok(store) = state.0.lock() {
@@ -732,7 +912,18 @@ fn spawn_clipboard_watcher(app: AppHandle, state: ClipboardState) {
             };
 
             if !is_loaded {
+                initialized = false;
                 thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+
+            // The clipboard can already contain text from before ClipNest started.
+            // Treat that value as the baseline; only a subsequent change is a new
+            // clipboard record.
+            if !initialized {
+                last_seen = current_clipboard_fingerprint(&mut clipboard);
+                initialized = true;
+                thread::sleep(Duration::from_millis(interval.max(250)));
                 continue;
             }
 
@@ -820,10 +1011,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<tauri::tray::TrayIcon> {
                     }
 
                     if button_state == MouseButtonState::Up {
-                        let state = app.state::<ClipboardState>();
-                        if let Ok(store) = state.0.lock() {
-                            show_main_window(app, &store.settings, Some((anchor_x, anchor_y)));
-                        };
+                        show_window_when_ready(app, Some((anchor_x, anchor_y)));
                     }
                 }
                 TrayIconEvent::Move { position, .. } | TrayIconEvent::Enter { position, .. } => {
@@ -1385,6 +1573,8 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let history_file_path = app_data_path(app);
@@ -1413,7 +1603,9 @@ pub fn run() {
             app.manage(TrayIconHolder(tray_icon));
 
             // 3. Kısayolu kaydet ve pencere yerleşimini hemen uygula
-            let _ = register_global_shortcut(&app.handle(), &settings.shortcut);
+            if let Err(error) = sync_global_shortcut(&app.handle(), "", &settings.shortcut) {
+                eprintln!("[Shortcut] başlangıç kaydı başarısız: {error}");
+            }
             apply_window_layout(&app.handle(), &settings, None);
 
             // 4. Geçmiş öğelerini arka planda asenkron olarak yükle

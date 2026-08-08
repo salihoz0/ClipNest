@@ -9,7 +9,6 @@ import {
   Keyboard,
   LayoutPanelTop,
   ListFilter,
-  Maximize2,
   Minimize2,
   Minus,
   Search,
@@ -37,6 +36,8 @@ import {
   hideWindow,
   minimizeWindow,
   exitApp,
+  checkForUpdates,
+  installUpdate,
   type ClipboardItem,
   type Settings as AppSettings
 } from "./tauri";
@@ -102,7 +103,16 @@ function modifierFromKey(key: string) {
   return modifierKeyMap[key] ?? null;
 }
 
-function shortcutModifiersFromEvent(event: React.KeyboardEvent<HTMLButtonElement>) {
+type ShortcutKeyEvent = {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+  getModifierState: (keyArg: string) => boolean;
+};
+
+function shortcutModifiersFromEvent(event: ShortcutKeyEvent) {
   const superPressed =
     event.metaKey ||
     event.getModifierState("Meta") ||
@@ -121,7 +131,7 @@ function shortcutModifiersFromEvent(event: React.KeyboardEvent<HTMLButtonElement
   ].filter(Boolean) as string[];
 }
 
-function shortcutFromEvent(event: React.KeyboardEvent<HTMLButtonElement>, activeModifiers = new Set<string>()) {
+function shortcutFromEvent(event: ShortcutKeyEvent, activeModifiers = new Set<string>()) {
   if (event.key === "Escape") return { cancelled: true, value: "", needsModifier: false };
 
   const modifiers = [...new Set([...activeModifiers, ...shortcutModifiersFromEvent(event)])];
@@ -567,7 +577,6 @@ export function App() {
           onQuery={setQuery}
           onFilter={setFilter}
           onSelect={setSelectedId}
-          onPaste={quickPaste}
           onCopy={async (item) => {
             setItems(await copyItem(item.id));
             setToast(t.copied);
@@ -711,7 +720,6 @@ function ManagerView({
   onQuery,
   onFilter,
   onSelect,
-  onPaste,
   onCopy,
   onFavorite,
   onDelete,
@@ -730,7 +738,6 @@ function ManagerView({
   onQuery: (query: string) => void;
   onFilter: (filter: FilterId) => void;
   onSelect: (id: string) => void;
-  onPaste: (item: ClipboardItem) => void;
   onCopy: (item: ClipboardItem) => void;
   onFavorite: (id: string) => void;
   onDelete: (id: string) => void;
@@ -883,6 +890,7 @@ function SettingsModal({
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
   const recordingModifiersRef = useRef<Set<string>>(new Set());
   const shortcutLabel = isRecording ? labels.shortcutRecording : formatShortcutLabel(settings.shortcut, labels.shortcutDisabled);
@@ -899,6 +907,89 @@ function SettingsModal({
     setIsRecording(true);
     requestAnimationFrame(() => shortcutButtonRef.current?.focus());
   }
+
+  async function handleCheckUpdates() {
+    if (isCheckingUpdates) return;
+
+    setIsCheckingUpdates(true);
+    onShowToast(labels.updateChecking);
+
+    try {
+      const update = await checkForUpdates();
+      if (!update) {
+        onShowToast(labels.updateNone);
+        return;
+      }
+
+      const shouldInstall = window.confirm(
+        `${labels.updateFound}: v${update.version}\n\n${update.body ?? ""}\n\n${labels.updateInstallConfirm}`
+      );
+
+      if (!shouldInstall) {
+        await update.close();
+        onShowToast(labels.updateCancelled);
+        return;
+      }
+
+      onShowToast(labels.updateInstalling);
+      await installUpdate(update, (percent) => {
+        onShowToast(percent === null ? labels.updateDownloading : `${labels.updateDownloading} %${percent}`);
+      });
+    } catch (error) {
+      console.error("Update check failed:", error);
+      onShowToast(`${labels.updateFailed}: ${String(error)}`);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (event.repeat) return;
+
+      const modifier = modifierFromKey(event.key);
+      if (modifier) {
+        recordingModifiersRef.current.add(modifier);
+        setShortcutError("");
+        return;
+      }
+
+      const next = shortcutFromEvent(event, recordingModifiersRef.current);
+      if (next.cancelled) {
+        setShortcutError("");
+        recordingModifiersRef.current.clear();
+        setIsRecording(false);
+        return;
+      }
+
+      if (next.needsModifier || !next.value) {
+        setShortcutError(labels.shortcutNeedModifier);
+        return;
+      }
+
+      setShortcutError("");
+      recordingModifiersRef.current.clear();
+      setIsRecording(false);
+      void onShortcutChange(next.value);
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      const modifier = modifierFromKey(event.key);
+      if (modifier) recordingModifiersRef.current.delete(modifier);
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+    };
+  }, [isRecording, labels.shortcutNeedModifier, onShortcutChange]);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -1028,37 +1119,6 @@ function SettingsModal({
               type="button"
               className={`shortcut-capture ${isRecording ? "recording" : ""}`}
               onClick={startRecording}
-              onKeyDown={(event) => {
-                if (!isRecording) return;
-                event.preventDefault();
-                event.stopPropagation();
-                const modifier = modifierFromKey(event.key);
-                if (modifier) {
-                  recordingModifiersRef.current.add(modifier);
-                }
-                const next = shortcutFromEvent(event, recordingModifiersRef.current);
-                if (next.cancelled) {
-                  setShortcutError("");
-                  recordingModifiersRef.current.clear();
-                  setIsRecording(false);
-                  return;
-                }
-                if (next.needsModifier || !next.value) {
-                  setShortcutError(labels.shortcutNeedModifier);
-                  return;
-                }
-                setShortcutError("");
-                recordingModifiersRef.current.clear();
-                setIsRecording(false);
-                void onShortcutChange(next.value);
-              }}
-              onKeyUp={(event) => {
-                if (!isRecording) return;
-                const modifier = modifierFromKey(event.key);
-                if (modifier) {
-                  recordingModifiersRef.current.delete(modifier);
-                }
-              }}
             >
               <Keyboard size={16} />
               <span>{shortcutLabel}</span>
@@ -1102,9 +1162,10 @@ function SettingsModal({
         <button 
           type="button" 
           className="check-updates-btn"
-          onClick={() => onShowToast("Güncelleme kontrolü yapılıyor...")}
+          disabled={isCheckingUpdates}
+          onClick={() => void handleCheckUpdates()}
         >
-          {labels.checkUpdates || "Güncellemeleri Kontrol Et"}
+          {isCheckingUpdates ? labels.updateChecking : (labels.checkUpdates || "Güncellemeleri Kontrol Et")}
         </button>
 
         <button 
@@ -1235,7 +1296,7 @@ function ConfirmClearDialog({
 }) {
   return (
     <div className="confirm-overlay" onClick={onCancel}>
-      <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+      <div className="confirm-dialog confirm-clear-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="confirm-header">
           <div className="confirm-icon">
             <Trash2 size={22} />

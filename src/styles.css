@@ -1519,6 +1519,39 @@ h2 {
   color: var(--text-main);
 }
 
+/* ConfirmClearDialog uses the compact dialog styles above, not the grid used by settings dialogs. */
+.confirm-clear-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 360px);
+  padding: 20px;
+}
+
+.confirm-clear-dialog .confirm-header {
+  width: 100%;
+}
+
+.confirm-clear-dialog .confirm-title {
+  min-width: 0;
+}
+
+.confirm-clear-dialog .confirm-message {
+  padding-left: 0;
+}
+
+.confirm-clear-dialog .confirm-actions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.confirm-clear-dialog .confirm-btn {
+  min-width: 0;
+}
+
 /* Beautiful system tray pop-out animations */
 @keyframes slideFromTop {
   from {
@@ -1660,4 +1693,3 @@ h2 {
 .manager-topbar .toolbar {
   margin-right: 120px; /* Leave space for absolute window controls */
 }
-

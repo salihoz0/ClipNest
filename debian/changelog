@@ -1,5 +1,7 @@
-clipnest (1.0.0-1) unstable; urgency=medium
+clipnest (1.0.1-1) unstable; urgency=medium
 
-  * Initial release.
+  * Add signed GitHub Releases updater and in-app update installation.
+
+  * Fix modifier-key shortcut recording, refocus the popup window, and clean unused frontend code.
 
  -- Salih Öz <slhozdeveloper@gmail.com>  Sun, 19 Jul 2026 19:10:00 +0300
