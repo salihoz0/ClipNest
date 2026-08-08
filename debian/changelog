@@ -1,4 +1,6 @@
-clipnest (1.0.2-1) unstable; urgency=medium
+clipnest (1.0.3-1) unstable; urgency=medium
+
+  * Improve password dialog layout and show updater progress in the action button.
 
   * Show update status and errors inside the settings window.
 

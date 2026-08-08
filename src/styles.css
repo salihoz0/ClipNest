@@ -1332,7 +1332,9 @@ h2 {
 
 .check-updates-btn {
   width: 100%;
-  height: 44px;
+  min-height: 44px;
+  height: auto;
+  padding: 11px 14px;
   border: 0;
   border-radius: 10px;
   color: #ffffff;
@@ -1343,6 +1345,8 @@ h2 {
   margin-bottom: 12px;
   box-shadow: 0 8px 18px rgba(21, 93, 252, 0.24);
   transition: all 150ms ease-out;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .check-updates-btn:hover {
@@ -1360,17 +1364,6 @@ h2 {
   transform: none;
 }
 
-.update-status {
-  margin: -4px 0 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  color: var(--text-soft);
-  background: color-mix(in srgb, var(--surface) 82%, var(--accent) 18%);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
 .exit-app-btn {
   width: 100%;
   height: 44px;
@@ -1535,6 +1528,56 @@ h2 {
 :root[data-theme="dark"] .confirm-copy p,
 :root[data-theme="dark"] .confirm-secondary {
   color: var(--text-main);
+}
+
+.password-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(100%, 380px);
+  padding: 22px;
+}
+
+.password-dialog .confirm-copy {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+}
+
+.password-dialog .confirm-copy h3 {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.password-dialog .confirm-copy p {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+.password-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--text-main);
+  background: var(--panel);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.password-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(21, 93, 252, 0.14);
+}
+
+.password-dialog .confirm-actions {
+  width: 100%;
+  margin-top: 0;
 }
 
 /* ConfirmClearDialog uses the compact dialog styles above, not the grid used by settings dialogs. */

@@ -1177,14 +1177,10 @@ function SettingsModal({
           className="check-updates-btn"
           disabled={isCheckingUpdates}
           onClick={() => void handleCheckUpdates()}
+          aria-live="polite"
         >
-          {isCheckingUpdates ? labels.updateChecking : (labels.checkUpdates || "Güncellemeleri Kontrol Et")}
+          {updateStatus || labels.checkUpdates || "Güncellemeleri Kontrol Et"}
         </button>
-        {updateStatus ? (
-          <p className="update-status" role="status" aria-live="polite">
-            {updateStatus}
-          </p>
-        ) : null}
 
         <button 
           type="button" 
@@ -1240,16 +1236,15 @@ function SettingsModal({
         {passwordModalOpen && (
           <div className="confirm-backdrop" onClick={() => { setPasswordModalOpen(false); setPassword(""); }}>
             <section
-              className="confirm-dialog"
+              className="confirm-dialog password-dialog"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="password-title"
               onClick={(event) => event.stopPropagation()}
-              style={{ minWidth: "360px", maxWidth: "420px", width: "90vw" }}
             >
-              <div className="confirm-copy" style={{ textAlign: "center" }}>
+              <div className="confirm-copy">
                 <h3 id="password-title">Yönetici Şifresi</h3>
-                <p style={{ whiteSpace: "normal", lineHeight: 1.5 }}>
+                <p>
                   Uygulamayı kaldırmak için şifrenizi girin
                 </p>
               </div>
@@ -1265,7 +1260,7 @@ function SettingsModal({
                   try { await uninstallApp(password); onShowToast("Uygulama kaldırılıyor..."); setPasswordModalOpen(false); setPassword(""); }
                   catch (err) { onShowToast(`${String(err)}`); setIsUninstalling(false); }
                 })(); }}}
-                style={{ width: "100%", padding: "12px", marginBottom: "16px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: "1rem", outline: "none", boxSizing: "border-box" }}
+                className="password-input"
               />
               <div className="confirm-actions">
                 <button type="button" className="confirm-secondary" onClick={() => { setPasswordModalOpen(false); setPassword(""); }}>
