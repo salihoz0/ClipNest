@@ -8,8 +8,9 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -31,8 +32,10 @@ const HISTORY_FILE: &str = "history.json";
 const MAX_PREVIEW_CHARS: usize = 180;
 const MAX_CAPTURE_CHARS: usize = 250_000;
 const AUTOSTART_ARG: &str = "--autostart";
+const SCREEN_OCR_ARG: &str = "--screen-ocr";
 const PACKAGE_CANDIDATES: &[&str] = &["clip-nest", "clipnest"];
 const GNOME_CLIPNEST_BINDING: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipnest/";
+const GNOME_OCR_BINDING: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipnest-ocr/";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ClipboardKind {
@@ -106,6 +109,8 @@ struct Settings {
     ui_scale: u16,
     #[serde(default)]
     shortcut: String,
+    #[serde(default = "default_ocr_shortcut")]
+    ocr_shortcut: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +141,14 @@ struct QuitState(Arc<AtomicBool>);
 struct TrayIconHolder(tauri::tray::TrayIcon);
 
 pub struct PreviousWindow(pub Mutex<Option<String>>);
+
+#[derive(Clone, Copy, Debug)]
+struct ScreenOcrWindowState {
+    always_on_top: bool,
+}
+
+#[derive(Clone, Default)]
+struct ScreenOcrState(Arc<Mutex<Option<ScreenOcrWindowState>>>);
 
 #[derive(Clone)]
 enum ClipboardPayload {
@@ -186,6 +199,10 @@ fn default_ui_scale() -> u16 {
     100
 }
 
+fn default_ocr_shortcut() -> String {
+    "Super+Shift+T".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -198,6 +215,7 @@ impl Default for Settings {
             window_anchor: default_window_anchor(),
             ui_scale: default_ui_scale(),
             shortcut: String::new(),
+            ocr_shortcut: default_ocr_shortcut(),
         }
     }
 }
@@ -406,6 +424,10 @@ fn is_autostart_launch() -> bool {
     std::env::args().any(|arg| arg == AUTOSTART_ARG)
 }
 
+fn is_screen_ocr_launch() -> bool {
+    std::env::args().any(|arg| arg == SCREEN_OCR_ARG)
+}
+
 fn fingerprint_image(bytes: &[u8], width: usize, height: usize) -> u64 {
     let mut hasher = DefaultHasher::new();
     width.hash(&mut hasher);
@@ -414,12 +436,17 @@ fn fingerprint_image(bytes: &[u8], width: usize, height: usize) -> u64 {
     hasher.finish()
 }
 
-fn encode_png_data_url(bytes: &[u8], width: usize, height: usize) -> Result<String, String> {
+fn encode_png_bytes(bytes: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();
     let encoder = PngEncoder::new(&mut png);
     encoder
         .write_image(bytes, width as u32, height as u32, image::ColorType::Rgba8.into())
         .map_err(|error| error.to_string())?;
+    Ok(png)
+}
+
+fn encode_png_data_url(bytes: &[u8], width: usize, height: usize) -> Result<String, String> {
+    let png = encode_png_bytes(bytes, width, height)?;
     Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
 }
 
@@ -454,6 +481,196 @@ fn copy_payload_to_clipboard(payload: &ClipboardPayload) -> Result<(), String> {
                 .map_err(|error| error.to_string())
         }
     }
+}
+
+fn tesseract_text(png: &[u8]) -> Result<String, String> {
+    let languages = Command::new("tesseract")
+        .arg("--list-langs")
+        .output()
+        .map_err(|_| "OCR motoru bulunamadı. Debian/Ubuntu için: sudo apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-tur".to_string())?;
+
+    let available = String::from_utf8_lossy(&languages.stdout);
+    let language = if available.lines().any(|line| line.trim() == "tur")
+        && available.lines().any(|line| line.trim() == "eng")
+    {
+        "tur+eng"
+    } else if available.lines().any(|line| line.trim() == "eng") {
+        "eng"
+    } else {
+        return Err("Tesseract dil verisi bulunamadı. tesseract-ocr-eng ve tesseract-ocr-tur paketlerini kurun".to_string());
+    };
+
+    let mut child = Command::new("tesseract")
+        .args(["stdin", "stdout", "--dpi", "300", "--psm", "6", "-l", language])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("OCR motoru başlatılamadı: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(png)
+            .map_err(|error| format!("OCR görseli gönderilemedi: {error}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("OCR işlemi tamamlanamadı: {error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if error.is_empty() {
+            "OCR işlemi başarısız oldu".to_string()
+        } else {
+            format!("OCR işlemi başarısız: {error}")
+        });
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return Err("OCR metin bulamadı".to_string());
+    }
+    Ok(text)
+}
+
+fn save_ocr_result(text: String, source: &str, state: &State<'_, ClipboardState>) -> Result<Vec<ClipboardItem>, String> {
+    copy_payload_to_clipboard(&ClipboardPayload::Text(text.clone()))?;
+    let mut store = state.0.lock().map_err(|error| error.to_string())?;
+    store.upsert_text(text, source);
+    store.save()?;
+    Ok(store.items.clone())
+}
+
+/// OCR oturumu bittiğinde yalnızca geçici pencere ayarını geri alır.
+/// Pencereyi burada görünür yapmıyoruz: kullanıcı ekran seçerken ClipNest'in
+/// tekrar açılması hem flaşa hem de seçimin arkasında uygulamanın görünmesine yol açıyordu.
+fn finish_screen_ocr_session(window: &tauri::WebviewWindow, state: &ScreenOcrState) {
+    let previous = state.0.lock().ok().and_then(|mut value| value.take());
+    if let Some(previous) = previous {
+        let _ = window.set_always_on_top(previous.always_on_top);
+    }
+}
+
+#[tauri::command]
+fn ocr_image_item(id: String, state: State<'_, ClipboardState>) -> Result<Vec<ClipboardItem>, String> {
+    let data_url = {
+        let store = state.0.lock().map_err(|error| error.to_string())?;
+        let item = store
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "Görsel kaydı bulunamadı".to_string())?;
+        if item.kind != ClipboardKind::Image {
+            return Err("OCR yalnızca görsel kayıtlar için kullanılabilir".to_string());
+        }
+        item.content.clone()
+    };
+
+    let (_, encoded) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Görsel verisi çözülemedi".to_string())?;
+    let png = STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("Görsel verisi çözülemedi: {error}"))?;
+    let text = tesseract_text(&png)?;
+    save_ocr_result(text, "ocr-image", &state)
+}
+
+#[tauri::command]
+fn prepare_screen_ocr(
+    window: tauri::WebviewWindow,
+    window_state: State<'_, ScreenOcrState>,
+) -> Result<(), String> {
+    {
+        let mut current = window_state.0.lock().map_err(|error| error.to_string())?;
+        if current.is_some() {
+            return Err("Ekran OCR zaten açık".to_string());
+        }
+        let always_on_top = window.is_always_on_top().unwrap_or(false);
+        *current = Some(ScreenOcrWindowState {
+            always_on_top,
+        });
+    }
+
+    let _ = window.set_always_on_top(false);
+    if let Err(error) = window.hide() {
+        finish_screen_ocr_session(&window, &window_state);
+        return Err(format!("OCR hazırlığı başarısız: {error}"));
+    }
+    Ok(())
+}
+
+fn capture_screen_ocr(
+    window: &tauri::WebviewWindow,
+    window_state: &ScreenOcrState,
+    clipboard_state: &State<'_, ClipboardState>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let result = (|| {
+        if window_state.0.lock().map_err(|error| error.to_string())?.is_none() {
+            return Err("Ekran OCR oturumu başlatılmadı".to_string());
+        }
+
+        let image_path = std::env::temp_dir().join(format!("clipnest-ocr-{}.png", Uuid::new_v4()));
+        let selection = Command::new("scrot")
+            .args(["-s", "-f"])
+            .arg(&image_path)
+            .status()
+            .map_err(|_| "Ekran OCR için scrot bulunamadı. scrot paketini kurun".to_string())?;
+
+        if !selection.success() || !image_path.exists() {
+            return Err("Ekran seçimi iptal edildi".to_string());
+        }
+
+        let png = fs::read(&image_path).map_err(|error| format!("Seçilen ekran görüntüsü okunamadı: {error}"))?;
+        let _ = fs::remove_file(&image_path);
+        let text = tesseract_text(&png)?;
+        save_ocr_result(text, "ocr-screen", clipboard_state)
+    })();
+
+    finish_screen_ocr_session(window, window_state);
+    result
+}
+
+#[tauri::command]
+fn capture_screen_ocr_command(
+    app: AppHandle,
+    window_state: State<'_, ScreenOcrState>,
+    clipboard_state: State<'_, ClipboardState>,
+) -> Result<Vec<ClipboardItem>, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "ClipNest penceresi bulunamadı".to_string())?;
+    capture_screen_ocr(&window, &window_state, &clipboard_state)
+}
+
+fn trigger_screen_ocr(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let window_state = app.state::<ScreenOcrState>();
+    if let Err(error) = prepare_screen_ocr(window, window_state) {
+        let _ = app.emit("screen-ocr://error", error);
+        return;
+    }
+
+    // Gizleme komutunun pencere yöneticisi tarafından işlenmesine fırsat tanır.
+    // Seçim aracını aynı UI turunda başlatmak, görünür pencerenin ekran görüntüsüne
+    // girmesine neden oluyordu.
+    let app_handle = app.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(400));
+        let Some(window) = app_handle.get_webview_window("main") else {
+            return;
+        };
+        let window_state = app_handle.state::<ScreenOcrState>();
+        let clipboard_state = app_handle.state::<ClipboardState>();
+        match capture_screen_ocr(&window, &window_state, &clipboard_state) {
+            Ok(items) => emit_items(&app_handle, &items),
+            Err(error) => {
+                let _ = app_handle.emit("screen-ocr://error", error);
+            }
+        }
+    });
 }
 
 fn paste_to_focused_app(app: AppHandle, payload: ClipboardPayload) -> Result<(), String> {
@@ -664,6 +881,54 @@ fn sync_gnome_shortcut(previous: &str, next: &str) -> Result<(), String> {
     }
 }
 
+fn sync_gnome_ocr_shortcut(previous: &str, next: &str) -> Result<(), String> {
+    let schema = "org.gnome.settings-daemon.plugins.media-keys";
+    let output = Command::new("gsettings")
+        .args(["get", schema, "custom-keybindings"])
+        .output()
+        .map_err(|error| format!("GNOME kısayolları okunamadı: {error}"))?;
+
+    if !output.status.success() {
+        return Err("GNOME kısayolları okunamadı".to_string());
+    }
+
+    let current = String::from_utf8_lossy(&output.stdout);
+    let mut bindings = parse_gsettings_string_list(&current);
+    let previous_is_gnome = is_super_shortcut(previous);
+    let next_is_gnome = is_super_shortcut(next);
+    let mut bindings_changed = false;
+
+    if previous_is_gnome || (!next_is_gnome && bindings.iter().any(|binding| binding == GNOME_OCR_BINDING)) {
+        bindings.retain(|binding| binding != GNOME_OCR_BINDING);
+        reset_gnome_binding(GNOME_OCR_BINDING);
+        bindings_changed = true;
+    }
+
+    if next_is_gnome {
+        let binding_schema = format!("{schema}.custom-keybinding:{GNOME_OCR_BINDING}");
+        let binding = to_gnome_shortcut(next).ok_or_else(|| "GNOME OCR kısayolu çözülemedi".to_string())?;
+        if !gnome_binding_value_matches(&binding_schema, "name", "ClipNest Ekran OCR") {
+            set_gnome_binding_value(&binding_schema, "name", "ClipNest Ekran OCR")?;
+        }
+        if !gnome_binding_value_matches(&binding_schema, "command", "/usr/bin/clipnest --screen-ocr") {
+            set_gnome_binding_value(&binding_schema, "command", "/usr/bin/clipnest --screen-ocr")?;
+        }
+        if !gnome_binding_value_matches(&binding_schema, "binding", &binding) {
+            set_gnome_binding_value(&binding_schema, "binding", &binding)?;
+        }
+        if !bindings.iter().any(|item| item == GNOME_OCR_BINDING) {
+            bindings.push(GNOME_OCR_BINDING.to_string());
+            bindings_changed = true;
+        }
+    }
+
+    if bindings_changed {
+        set_gnome_custom_keybindings(&bindings)
+    } else {
+        Ok(())
+    }
+}
+
 fn register_global_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     let shortcut = shortcut.trim();
     if shortcut.is_empty() {
@@ -731,6 +996,63 @@ fn sync_global_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<(
         Err(error) => {
             if !previous.is_empty() && !is_super_shortcut(previous) {
                 let _ = register_global_shortcut(app, previous);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn register_ocr_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
+    let shortcut = shortcut.trim();
+    if shortcut.is_empty() || is_super_shortcut(shortcut) {
+        return Ok(());
+    }
+
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                trigger_screen_ocr(app);
+            }
+        })
+        .map_err(|error| format!("OCR kısayolu kaydedilemedi: {error}"))
+}
+
+fn sync_ocr_shortcut(app: &AppHandle, previous: &str, next: &str) -> Result<(), String> {
+    let previous = previous.trim();
+    let next = next.trim();
+
+    if previous == next {
+        if is_super_shortcut(next) {
+            sync_gnome_ocr_shortcut("", next)?;
+        }
+        return Ok(());
+    }
+
+    if !previous.is_empty() && !is_super_shortcut(previous) {
+        let _ = app.global_shortcut().unregister(previous);
+    }
+
+    if next.is_empty() {
+        if is_super_shortcut(previous) {
+            sync_gnome_ocr_shortcut(previous, next)?;
+        }
+        return Ok(());
+    }
+
+    if is_super_shortcut(next) {
+        sync_gnome_ocr_shortcut(previous, next)?;
+        return Ok(());
+    }
+
+    if is_super_shortcut(previous) {
+        sync_gnome_ocr_shortcut(previous, "")?;
+    }
+
+    match register_ocr_shortcut(app, next) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if !previous.is_empty() && !is_super_shortcut(previous) {
+                let _ = register_ocr_shortcut(app, previous);
             }
             Err(error)
         }
@@ -1268,10 +1590,16 @@ fn update_settings(settings: Settings, app: AppHandle, state: State<'_, Clipboar
         window_anchor: settings.window_anchor,
         ui_scale: settings.ui_scale.clamp(90, 115),
         shortcut: settings.shortcut.trim().to_string(),
+        ocr_shortcut: settings.ocr_shortcut.trim().to_string(),
     };
 
     drop(store);
     sync_global_shortcut(&app, &previous_shortcut, &next_settings.shortcut)?;
+    let previous_ocr_shortcut = previous_settings.ocr_shortcut.trim().to_string();
+    if let Err(error) = sync_ocr_shortcut(&app, &previous_ocr_shortcut, &next_settings.ocr_shortcut) {
+        let _ = sync_global_shortcut(&app, &next_settings.shortcut, &previous_shortcut);
+        return Err(error);
+    }
 
     let mut store = state.0.lock().map_err(|error| error.to_string())?;
     store.settings = Settings {
@@ -1284,6 +1612,7 @@ fn update_settings(settings: Settings, app: AppHandle, state: State<'_, Clipboar
         window_anchor: next_settings.window_anchor,
         ui_scale: next_settings.ui_scale,
         shortcut: next_settings.shortcut,
+        ocr_shortcut: next_settings.ocr_shortcut,
     };
     store.trim();
     store.save()?;
@@ -1442,6 +1771,7 @@ fn remove_gnome_shortcut() -> Result<(), String> {
     let candidates = [
         "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clipnest/",
         "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/io-github-salihoz-clipnest/",
+        GNOME_OCR_BINDING,
     ];
 
     for binding in bindings.clone() {
@@ -1530,9 +1860,12 @@ fn app_ready(app: AppHandle) {
         .lock()
         .map(|store| store.settings.clone());
     let is_autostart = is_autostart_launch();
+    let is_ocr_launch = is_screen_ocr_launch();
     
     if let Ok(settings) = settings {
-        if !is_autostart {
+        if is_ocr_launch {
+            trigger_screen_ocr(&app);
+        } else if !is_autostart {
             show_main_window(&app, &settings, None);
         }
     }
@@ -1545,8 +1878,12 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
-            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-                show_window_for_current_settings(app);
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                if args.iter().any(|arg| arg == SCREEN_OCR_ARG) {
+                    trigger_screen_ocr(app);
+                } else {
+                    show_window_for_current_settings(app);
+                }
             }))
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1595,6 +1932,7 @@ pub fn run() {
             let quit_state = QuitState(Arc::new(AtomicBool::new(false)));
             let previous_window = PreviousWindow(Mutex::new(None));
             app.manage(state.clone());
+            app.manage(ScreenOcrState::default());
             app.manage(tray_anchor_state.clone());
             app.manage(quit_state.clone());
             app.manage(previous_window);
@@ -1605,6 +1943,9 @@ pub fn run() {
             // 3. Kısayolu kaydet ve pencere yerleşimini hemen uygula
             if let Err(error) = sync_global_shortcut(&app.handle(), "", &settings.shortcut) {
                 eprintln!("[Shortcut] başlangıç kaydı başarısız: {error}");
+            }
+            if let Err(error) = sync_ocr_shortcut(&app.handle(), "", &settings.ocr_shortcut) {
+                eprintln!("[OCR Shortcut] başlangıç kaydı başarısız: {error}");
             }
             apply_window_layout(&app.handle(), &settings, None);
 
@@ -1646,6 +1987,9 @@ pub fn run() {
             delete_item,
             clear_history,
             toggle_favorite,
+            ocr_image_item,
+            prepare_screen_ocr,
+            capture_screen_ocr_command,
             update_settings,
             uninstall_app,
             minimize_window,

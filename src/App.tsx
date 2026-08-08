@@ -1,8 +1,9 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Clipboard,
   Copy,
+  Download,
   Eraser,
   Heart,
   Image,
@@ -12,13 +13,15 @@ import {
   Minimize2,
   Minus,
   Search,
+  ScanText,
   Settings,
   Sigma,
   Smile,
   Star,
   Trash2,
   Type,
-  X
+  X,
+  CheckCircle2
 } from "lucide-react";
 import {
   clearHistory,
@@ -37,7 +40,10 @@ import {
   minimizeWindow,
   exitApp,
   checkForUpdates,
+  captureScreenOcr,
   installUpdate,
+  ocrImageItem,
+  prepareScreenOcr,
   type ClipboardItem,
   type Settings as AppSettings
 } from "./tauri";
@@ -47,6 +53,7 @@ type Tab = "clipboard" | "emojis" | "symbols";
 type PickerFilter = "all" | "text" | "image";
 type Labels = (typeof translations)[keyof typeof translations];
 type PickerSection = { name: string; items: string[] };
+type PendingUpdate = NonNullable<Awaited<ReturnType<typeof checkForUpdates>>>;
 
 const fallbackSettings: AppSettings = {
   max_items: 200,
@@ -57,7 +64,8 @@ const fallbackSettings: AppSettings = {
   default_view: "picker",
   window_anchor: "center",
   ui_scale: 100,
-  shortcut: ""
+  shortcut: "",
+  ocr_shortcut: "Super+Shift+T"
 };
 
 const modifierKeyMap: Record<string, string> = {
@@ -174,9 +182,27 @@ export function App() {
   const [toast, setToast] = useState<string>(translations.tr.ready);
   const [emojiSections, setEmojiSections] = useState<PickerSection[]>([]);
   const [animateEntrance, setAnimateEntrance] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ item: ClipboardItem; x: number; y: number } | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const ocrFlowActiveRef = useRef(false);
+  const autoUpdateCheckedRef = useRef(false);
   const saveTokenRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const t = translations[settings.locale];
+
+  useEffect(() => {
+    const closeContextMenu = () => setContextMenu(null);
+    window.addEventListener("pointerdown", closeContextMenu);
+    window.addEventListener("resize", closeContextMenu);
+    return () => {
+      window.removeEventListener("pointerdown", closeContextMenu);
+      window.removeEventListener("resize", closeContextMenu);
+    };
+  }, []);
 
   useEffect(() => {
     getSnapshot()
@@ -233,6 +259,84 @@ export function App() {
       return () => clearTimeout(timer);
     }
   }, [isReady]);
+
+  const checkUpdates = useCallback(async (showCheckingToast = true) => {
+    if (isCheckingUpdates || isInstallingUpdate) return;
+
+    setIsCheckingUpdates(true);
+    setUpdateStatus(t.updateChecking);
+    if (showCheckingToast) setToast(t.updateChecking);
+
+    try {
+      const update = await checkForUpdates();
+      if (!update) {
+        setUpdateStatus(t.updateNone);
+        if (showCheckingToast) setToast(t.updateNone);
+        return;
+      }
+
+      const foundMessage = `${t.updateFound}: v${update.version}`;
+      setUpdateStatus(foundMessage);
+      setPendingUpdate(update);
+      setToast(foundMessage);
+    } catch (error) {
+      console.error("Update check failed:", error);
+      const detail = error instanceof Error ? error.message : String(error);
+      const errorMessage = `${t.updateFailed}: ${detail}`;
+      setUpdateStatus(errorMessage);
+      if (showCheckingToast) setToast(errorMessage);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }, [isCheckingUpdates, isInstallingUpdate, t]);
+
+  useEffect(() => {
+    if (!isReady || autoUpdateCheckedRef.current) return;
+    autoUpdateCheckedRef.current = true;
+    const timer = window.setTimeout(() => {
+      void checkUpdates(false);
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [isReady, checkUpdates]);
+
+  const cancelPendingUpdate = useCallback(async () => {
+    if (!pendingUpdate || isInstallingUpdate) return;
+    try {
+      await pendingUpdate.close();
+    } catch (error) {
+      console.warn("Could not close pending update:", error);
+    }
+    setPendingUpdate(null);
+    setUpdateStatus(t.updateCancelled);
+    setToast(t.updateCancelled);
+  }, [isInstallingUpdate, pendingUpdate, t]);
+
+  const installPendingUpdate = useCallback(async () => {
+    if (!pendingUpdate || isInstallingUpdate) return;
+
+    setIsInstallingUpdate(true);
+    setUpdateProgress(0);
+    setUpdateStatus(t.updateInstalling);
+    setToast(t.updateInstalling);
+
+    try {
+      await installUpdate(pendingUpdate, (percent) => {
+        setUpdateProgress(percent);
+        const progressMessage = percent === null ? t.updateDownloading : `${t.updateDownloading} %${percent}`;
+        setUpdateStatus(progressMessage);
+        setToast(progressMessage);
+      });
+      setPendingUpdate(null);
+    } catch (error) {
+      console.error("Update install failed:", error);
+      const detail = error instanceof Error ? error.message : String(error);
+      const errorMessage = `${t.updateFailed}: ${detail}`;
+      setUpdateStatus(errorMessage);
+      setToast(errorMessage);
+    } finally {
+      setIsInstallingUpdate(false);
+    }
+  }, [isInstallingUpdate, pendingUpdate, t]);
 
   useEffect(() => {
     if (tab !== "emojis") return;
@@ -319,6 +423,16 @@ export function App() {
     }
   }
 
+  async function changeOcrShortcut(shortcut: string) {
+    const normalized = normalizeShortcut(shortcut);
+    try {
+      await patchSettings({ ...settings, ocr_shortcut: normalized }, normalized ? t.shortcutSaved : t.shortcutCleared);
+    } catch (error) {
+      console.error(error);
+      setToast(`${t.shortcutFailed}. ${t.shortcutConflict}`);
+    }
+  }
+
   async function quickPaste(item: ClipboardItem) {
     try {
       const next = await pasteToPrevious({
@@ -354,6 +468,47 @@ export function App() {
       setItems(await createItem(content, source));
       setQuery(""); // Arama sıfırlama
     }
+  }
+
+  async function runImageOcr(item: ClipboardItem) {
+    if (item.kind !== "image") return;
+    setContextMenu(null);
+    setToast(t.ocrReading);
+    try {
+      setItems(await ocrImageItem(item.id));
+      setToast(t.ocrCopied);
+    } catch (error) {
+      setToast(String(error));
+    }
+  }
+
+  async function beginScreenOcr() {
+    setContextMenu(null);
+    setToast(t.ocrPreparing);
+    ocrFlowActiveRef.current = true;
+    try {
+      await prepareScreenOcr();
+      // `hide` işleminin pencere yöneticisinde görünür hâle gelmesini bekle.
+      await new Promise<void>(resolve => window.setTimeout(resolve, 400));
+      setItems(await captureScreenOcr());
+      setToast(t.ocrCopied);
+    } catch (error) {
+      setToast(String(error));
+    } finally {
+      ocrFlowActiveRef.current = false;
+    }
+  }
+
+  function openContextMenu(event: ReactMouseEvent, item: ClipboardItem) {
+    if (item.kind !== "image") return;
+    event.preventDefault();
+    const menuWidth = 190;
+    const menuHeight = 44;
+    setContextMenu({
+      item,
+      x: Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+      y: Math.min(event.clientY, window.innerHeight - menuHeight - 8)
+    });
   }
 
   const tabs = [
@@ -398,6 +553,7 @@ export function App() {
       setIsFocused(true);
     };
     const handleBlur = () => {
+      if (ocrFlowActiveRef.current) return;
       // Fare koordinatlarının gerçekte pencere sınırları dışında olup olmadığını kontrol et
       const { x, y } = lastMousePosRef.current;
       const isOutside = x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight;
@@ -494,10 +650,13 @@ export function App() {
       {currentView === "picker" ? (
         <section className="picker">
           <header className="picker-titlebar" data-tauri-drag-region>
-            <button type="button" className="ghost-icon active" onClick={() => void switchView("manager")} title={t.fullView}>
-              <LayoutPanelTop size={17} />
-            </button>
+              <button type="button" className="ghost-icon active" onClick={() => void switchView("manager")} title={t.fullView}>
+                <LayoutPanelTop size={17} />
+              </button>
             <div className="title-actions">
+              <button type="button" className="ghost-icon" onClick={() => void beginScreenOcr()} title={t.screenOcr}>
+                <ScanText size={16} />
+              </button>
               <button type="button" className="ghost-icon" onClick={() => setSettingsOpen(true)} title={t.settings}>
                 <Settings size={16} />
               </button>
@@ -547,6 +706,7 @@ export function App() {
               onPaste={quickPaste}
               onFavorite={async (id) => setItems(await toggleFavorite(id))}
               onDelete={async (id) => setItems(await deleteItem(id))}
+              onContextMenu={openContextMenu}
             />
           )}
 
@@ -587,6 +747,8 @@ export function App() {
           onClear={() => setConfirmClear(true)}
           onCompact={() => void switchView("picker")}
           onOpenSettings={() => setSettingsOpen(true)}
+          onScreenOcr={() => void beginScreenOcr()}
+          onContextMenu={openContextMenu}
         />
       )}
 
@@ -604,9 +766,37 @@ export function App() {
           labels={t}
           onChange={changeSettings}
           onShortcutChange={changeShortcut}
+          onOcrShortcutChange={changeOcrShortcut}
           onShowToast={setToast}
+          onCheckUpdates={() => void checkUpdates()}
+          isCheckingUpdates={isCheckingUpdates}
+          updateStatus={updateStatus}
           onClose={() => setSettingsOpen(false)}
         />
+      )}
+
+      {pendingUpdate ? (
+        <UpdateDialog
+          update={pendingUpdate}
+          labels={t}
+          isInstalling={isInstallingUpdate}
+          progress={updateProgress}
+          onCancel={() => void cancelPendingUpdate()}
+          onInstall={() => void installPendingUpdate()}
+        />
+      ) : null}
+
+      {contextMenu && (
+        <div
+          className="item-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" onClick={() => void runImageOcr(contextMenu.item)}>
+            <ScanText size={15} />
+            {t.ocrImage}
+          </button>
+        </div>
       )}
     </main>
   );
@@ -621,7 +811,8 @@ function ClipboardPanel({
   onFilter,
   onPaste,
   onFavorite,
-  onDelete
+  onDelete,
+  onContextMenu
 }: {
   items: ClipboardItem[];
   selectedId: string | null;
@@ -632,6 +823,7 @@ function ClipboardPanel({
   onPaste: (item: ClipboardItem) => void;
   onFavorite: (id: string) => void;
   onDelete: (id: string) => void;
+  onContextMenu: (event: ReactMouseEvent, item: ClipboardItem) => void;
 }) {
   return (
     <section className="picker-content">
@@ -655,7 +847,7 @@ function ClipboardPanel({
       ) : (
         <div className="compact-list">
           {items.map((item) => (
-            <div key={item.id} className={`compact-item ${selectedId === item.id ? "selected" : ""}`}>
+            <div key={item.id} className={`compact-item ${selectedId === item.id ? "selected" : ""}`} onContextMenu={(event) => onContextMenu(event, item)}>
               <button type="button" className="compact-item-main" onClick={() => onPaste(item)}>
                 {item.kind === "image" ? (
                   <div className="compact-image-wrap">
@@ -725,7 +917,9 @@ function ManagerView({
   onDelete,
   onClear,
   onCompact,
-  onOpenSettings
+  onOpenSettings,
+  onScreenOcr,
+  onContextMenu
 }: {
   items: ClipboardItem[];
   visibleItems: ClipboardItem[];
@@ -744,6 +938,8 @@ function ManagerView({
   onClear: () => void;
   onCompact: () => void;
   onOpenSettings: () => void;
+  onScreenOcr: () => void;
+  onContextMenu: (event: ReactMouseEvent, item: ClipboardItem) => void;
 }) {
   return (
     <section className="manager">
@@ -776,7 +972,7 @@ function ManagerView({
 
         <section className="manager-list">
           {visibleItems.map((item) => (
-            <div key={item.id} className={`history-item ${selected?.id === item.id ? "selected" : ""}`}>
+            <div key={item.id} className={`history-item ${selected?.id === item.id ? "selected" : ""}`} onContextMenu={(event) => onContextMenu(event, item)}>
               <button type="button" className="history-item-main" onClick={() => onSelect(item.id)}>
                 <span className="item-topline">
                   <span>{item.favorite ? <Star size={14} fill="currentColor" /> : item.kind === "image" ? <Image size={14} /> : <Clipboard size={14} />} {formatTime(item.copied_at, settings.locale)}</span>
@@ -805,8 +1001,12 @@ function ManagerView({
 
       <section className="manager-workspace" style={{ position: 'relative' }}>
         <header className="manager-topbar" data-tauri-drag-region>
-          <div className="title-area" data-tauri-drag-region>
+          <div className="title-area manager-title-area" data-tauri-drag-region>
             <h1 data-tauri-drag-region>{labels.history}</h1>
+            <button type="button" className="screen-ocr-toolbar-button" onClick={onScreenOcr}>
+              <ScanText size={16} />
+              {labels.screenOcr}
+            </button>
           </div>
           <div className="toolbar">
             <button type="button" className="icon-label" onClick={onOpenSettings}>
@@ -873,28 +1073,39 @@ function SettingsModal({
   labels,
   onChange,
   onShortcutChange,
+  onOcrShortcutChange,
   onShowToast,
+  onCheckUpdates,
+  isCheckingUpdates,
+  updateStatus,
   onClose
 }: {
   settings: AppSettings;
   labels: Labels;
   onChange: (settings: AppSettings) => void;
   onShortcutChange: (shortcut: string) => Promise<void>;
+  onOcrShortcutChange: (shortcut: string) => Promise<void>;
   onShowToast: (message: string) => void;
+  onCheckUpdates: () => void;
+  isCheckingUpdates: boolean;
+  updateStatus: string;
   onClose: () => void;
 }) {
-  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTarget, setRecordingTarget] = useState<"app" | "ocr" | null>(null);
   const [shortcutError, setShortcutError] = useState("");
+  const [ocrShortcutError, setOcrShortcutError] = useState("");
   const [confirmUninstallOpen, setConfirmUninstallOpen] = useState(false);
   const [isUninstalling, setIsUninstalling] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [appVersion, setAppVersion] = useState("");
-  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState("");
   const shortcutButtonRef = useRef<HTMLButtonElement | null>(null);
+  const ocrShortcutButtonRef = useRef<HTMLButtonElement | null>(null);
   const recordingModifiersRef = useRef<Set<string>>(new Set());
+  const isRecording = recordingTarget === "app";
+  const isOcrRecording = recordingTarget === "ocr";
   const shortcutLabel = isRecording ? labels.shortcutRecording : formatShortcutLabel(settings.shortcut, labels.shortcutDisabled);
+  const ocrShortcutLabel = isOcrRecording ? labels.shortcutRecording : formatShortcutLabel(settings.ocr_shortcut, labels.shortcutDisabled);
 
   useEffect(() => {
     void getVersion()
@@ -902,62 +1113,24 @@ function SettingsModal({
       .catch(() => setAppVersion(""));
   }, []);
 
-  function startRecording() {
-    setShortcutError("");
+  function startRecording(target: "app" | "ocr") {
+    if (target === "app") setShortcutError("");
+    else setOcrShortcutError("");
     recordingModifiersRef.current.clear();
-    setIsRecording(true);
-    requestAnimationFrame(() => shortcutButtonRef.current?.focus());
-  }
-
-  async function handleCheckUpdates() {
-    if (isCheckingUpdates) return;
-
-    setIsCheckingUpdates(true);
-    setUpdateStatus(labels.updateChecking);
-    onShowToast(labels.updateChecking);
-
-    try {
-      const update = await checkForUpdates();
-      if (!update) {
-        setUpdateStatus(labels.updateNone);
-        onShowToast(labels.updateNone);
-        return;
-      }
-
-      const foundMessage = `${labels.updateFound}: v${update.version}`;
-      setUpdateStatus(foundMessage);
-      onShowToast(foundMessage);
-      const shouldInstall = window.confirm(
-        `${foundMessage}\n\n${update.body ?? ""}\n\n${labels.updateInstallConfirm}`
-      );
-
-      if (!shouldInstall) {
-        await update.close();
-        setUpdateStatus(labels.updateCancelled);
-        onShowToast(labels.updateCancelled);
-        return;
-      }
-
-      setUpdateStatus(labels.updateInstalling);
-      onShowToast(labels.updateInstalling);
-      await installUpdate(update, (percent) => {
-        const progressMessage = percent === null ? labels.updateDownloading : `${labels.updateDownloading} %${percent}`;
-        setUpdateStatus(progressMessage);
-        onShowToast(progressMessage);
-      });
-    } catch (error) {
-      console.error("Update check failed:", error);
-      const detail = error instanceof Error ? error.message : String(error);
-      const errorMessage = `${labels.updateFailed}: ${detail}`;
-      setUpdateStatus(errorMessage);
-      onShowToast(errorMessage);
-    } finally {
-      setIsCheckingUpdates(false);
-    }
+    setRecordingTarget(target);
+    requestAnimationFrame(() => {
+      const button = target === "app" ? shortcutButtonRef.current : ocrShortcutButtonRef.current;
+      button?.focus();
+    });
   }
 
   useEffect(() => {
-    if (!isRecording) return;
+    if (!recordingTarget) return;
+
+    const setRecorderError = (message: string) => {
+      if (recordingTarget === "app") setShortcutError(message);
+      else setOcrShortcutError(message);
+    };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
@@ -968,27 +1141,28 @@ function SettingsModal({
       const modifier = modifierFromKey(event.key);
       if (modifier) {
         recordingModifiersRef.current.add(modifier);
-        setShortcutError("");
+        setRecorderError("");
         return;
       }
 
       const next = shortcutFromEvent(event, recordingModifiersRef.current);
       if (next.cancelled) {
-        setShortcutError("");
+        setRecorderError("");
         recordingModifiersRef.current.clear();
-        setIsRecording(false);
+        setRecordingTarget(null);
         return;
       }
 
       if (next.needsModifier || !next.value) {
-        setShortcutError(labels.shortcutNeedModifier);
+        setRecorderError(labels.shortcutNeedModifier);
         return;
       }
 
-      setShortcutError("");
+      setRecorderError("");
       recordingModifiersRef.current.clear();
-      setIsRecording(false);
-      void onShortcutChange(next.value);
+      const target = recordingTarget;
+      setRecordingTarget(null);
+      void (target === "ocr" ? onOcrShortcutChange(next.value) : onShortcutChange(next.value));
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -1002,7 +1176,7 @@ function SettingsModal({
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("keyup", handleKeyUp, true);
     };
-  }, [isRecording, labels.shortcutNeedModifier, onShortcutChange]);
+  }, [recordingTarget, labels.shortcutNeedModifier, onShortcutChange, onOcrShortcutChange]);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -1013,6 +1187,8 @@ function SettingsModal({
             <X size={20} />
           </button>
         </header>
+
+        <div className="settings-section-title">{labels.appearance}</div>
 
         <div className="setting-block">
           <span className="setting-title">{labels.language}</span>
@@ -1053,6 +1229,8 @@ function SettingsModal({
           </div>
         </div>
 
+        <div className="settings-section-title">{labels.behavior}</div>
+
         <div className="setting-block">
           <span className="setting-title">{labels.windowPosition}</span>
           <div className="segmented segmented-3">
@@ -1067,6 +1245,8 @@ function SettingsModal({
             </button>
           </div>
         </div>
+
+        <div className="settings-section-title">{labels.historySettings}</div>
 
         <label className="setting-row">
           <span>{labels.interfaceScale}</span>
@@ -1114,6 +1294,8 @@ function SettingsModal({
           {labels.trim}
         </label>
 
+        <div className="settings-section-title">{labels.shortcutSettings}</div>
+
         <section className="shortcut-card">
           <div className="shortcut-card-head">
             <div>
@@ -1131,7 +1313,7 @@ function SettingsModal({
               ref={shortcutButtonRef}
               type="button"
               className={`shortcut-capture ${isRecording ? "recording" : ""}`}
-              onClick={startRecording}
+              onClick={() => startRecording("app")}
             >
               <Keyboard size={16} />
               <span>{shortcutLabel}</span>
@@ -1140,7 +1322,7 @@ function SettingsModal({
               <button
                 type="button"
                 className="icon-label"
-                onClick={startRecording}
+                onClick={() => startRecording("app")}
               >
                 {labels.shortcutRecordButton}
               </button>
@@ -1150,7 +1332,7 @@ function SettingsModal({
                 onClick={() => {
                   setShortcutError("");
                   recordingModifiersRef.current.clear();
-                  setIsRecording(false);
+                  setRecordingTarget(null);
                   void onShortcutChange("Super+V");
                 }}
               >
@@ -1161,7 +1343,7 @@ function SettingsModal({
                 className="icon-label"
                 onClick={() => {
                   setShortcutError("");
-                  setIsRecording(false);
+                  setRecordingTarget(null);
                   void onShortcutChange("");
                 }}
               >
@@ -1172,11 +1354,63 @@ function SettingsModal({
           {shortcutError ? <p className="shortcut-error">{shortcutError}</p> : null}
         </section>
 
+        <section className="shortcut-card ocr-shortcut-card">
+          <div className="shortcut-card-head">
+            <div>
+              <strong>{labels.screenOcr}</strong>
+              <p>{labels.ocrShortcutHint}</p>
+              <p className="shortcut-super-help">{labels.ocrShortcutSuperHelp}</p>
+            </div>
+            <span className={`shortcut-badge ${settings.ocr_shortcut ? "active" : ""}`}>{formatShortcutLabel(settings.ocr_shortcut, labels.shortcutDisabled)}</span>
+          </div>
+          <div className="shortcut-recorder">
+            <button
+              ref={ocrShortcutButtonRef}
+              type="button"
+              className={`shortcut-capture ${isOcrRecording ? "recording" : ""}`}
+              onClick={() => startRecording("ocr")}
+            >
+              <ScanText size={16} />
+              <span>{ocrShortcutLabel}</span>
+            </button>
+            <div className="shortcut-actions">
+              <button type="button" className="icon-label" onClick={() => startRecording("ocr")}>
+                {labels.shortcutRecordButton}
+              </button>
+              <button
+                type="button"
+                className="icon-label"
+                onClick={() => {
+                  setOcrShortcutError("");
+                  setRecordingTarget(null);
+                  void onOcrShortcutChange("Super+Shift+T");
+                }}
+              >
+                Super + Shift + T
+              </button>
+              <button
+                type="button"
+                className="icon-label"
+                onClick={() => {
+                  setOcrShortcutError("");
+                  setRecordingTarget(null);
+                  void onOcrShortcutChange("");
+                }}
+              >
+                {labels.shortcutClearButton}
+              </button>
+            </div>
+          </div>
+          {ocrShortcutError ? <p className="shortcut-error">{ocrShortcutError}</p> : null}
+        </section>
+
+        <div className="settings-section-title">{labels.maintenance}</div>
+
         <button 
           type="button" 
           className="check-updates-btn"
           disabled={isCheckingUpdates}
-          onClick={() => void handleCheckUpdates()}
+          onClick={onCheckUpdates}
           aria-live="polite"
         >
           {updateStatus || labels.checkUpdates || "Güncellemeleri Kontrol Et"}
@@ -1293,6 +1527,70 @@ function SettingsModal({
           </div>
         )}
 
+      </section>
+    </div>
+  );
+}
+
+function UpdateDialog({
+  update,
+  labels,
+  isInstalling,
+  progress,
+  onCancel,
+  onInstall
+}: {
+  update: PendingUpdate;
+  labels: Labels;
+  isInstalling: boolean;
+  progress: number | null;
+  onCancel: () => void;
+  onInstall: () => void;
+}) {
+  return (
+    <div className="update-backdrop" onClick={onCancel}>
+      <section
+        className="update-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="update-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="update-dialog-topline">
+          <div className="update-icon" aria-hidden="true">
+            {isInstalling ? <Download size={20} /> : <CheckCircle2 size={20} />}
+          </div>
+          <div>
+            <span className="update-eyebrow">ClipNest</span>
+            <h3 id="update-title">{labels.updateFound}</h3>
+          </div>
+          <span className="update-version">v{update.version}</span>
+        </div>
+
+        <div className="update-dialog-body">
+          <p>{update.body?.trim() || labels.updateInstallConfirm}</p>
+          {isInstalling ? (
+            <div className="update-progress-block" aria-live="polite">
+              <div className="update-progress-label">
+                <span>{labels.updateDownloading}</span>
+                <strong>{progress === null ? "…" : `%${progress}`}</strong>
+              </div>
+              <div className="update-progress-track">
+                <span style={{ width: `${progress ?? 0}%` }} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="update-dialog-actions">
+          <button type="button" className="update-secondary" disabled={isInstalling} onClick={onCancel}>
+            {labels.updateLater}
+          </button>
+          <button type="button" className="update-primary" disabled={isInstalling} onClick={onInstall}>
+            <Download size={15} />
+            {labels.updateInstallAction}
+          </button>
+        </div>
       </section>
     </div>
   );

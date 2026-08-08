@@ -28,6 +28,7 @@ export type Settings = {
   window_anchor: "center" | "mouse" | "fixed";
   ui_scale: number;
   shortcut: string;
+  ocr_shortcut: string;
 };
 
 export type ClipboardSnapshot = {
@@ -112,7 +113,8 @@ const mockSettings: Settings = {
   default_view: "picker",
   window_anchor: "center",
   ui_scale: 100,
-  shortcut: "Super+Shift+V"
+  shortcut: "Super+Shift+V",
+  ocr_shortcut: "Super+Shift+T"
 };
 
 export function getSnapshot() {
@@ -193,6 +195,21 @@ export function toggleFavorite(id: string) {
     return Promise.resolve([...mockItems]);
   }
   return invoke<ClipboardItem[]>("toggle_favorite", { id });
+}
+
+export function ocrImageItem(id: string) {
+  if (!isTauri) return Promise.resolve(mockItems);
+  return invoke<ClipboardItem[]>("ocr_image_item", { id });
+}
+
+export function prepareScreenOcr() {
+  if (!isTauri) return Promise.reject(new Error("Ekran OCR yalnızca masaüstü uygulamasında kullanılabilir"));
+  return invoke<void>("prepare_screen_ocr");
+}
+
+export function captureScreenOcr() {
+  if (!isTauri) return Promise.reject(new Error("Ekran OCR yalnızca masaüstü uygulamasında kullanılabilir"));
+  return invoke<ClipboardItem[]>("capture_screen_ocr_command");
 }
 
 export function updateSettings(settings: Settings) {

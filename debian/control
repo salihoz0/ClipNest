@@ -8,6 +8,6 @@ Homepage: https://github.com/salihoz0/ClipNest
 
 Package: clipnest
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, xdotool
+Depends: ${shlibs:Depends}, ${misc:Depends}, xdotool, scrot, tesseract-ocr, tesseract-ocr-eng, tesseract-ocr-tur
 Description: Modern clipboard history manager
  ClipNest is a clipboard history manager with tray controls, favorites, search, emoji and symbol insertion.
